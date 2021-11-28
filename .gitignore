@@ -31,7 +31,7 @@
 *.out
 *.app
 
-/CMakeCache.txt
-/cmake_install.cmake
-/CMakeFiles/
-/Makefile
+CMakeCache.txt
+cmake_install.cmake
+CMakeFiles
+Makefile

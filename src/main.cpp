@@ -1,56 +1,71 @@
-#include <asio/associated_executor.hpp>
-#include <asio/bind_executor.hpp>
-#include <asio/execution.hpp>
-#include <asio/static_thread_pool.hpp>
 #include <iostream>
-#include <string>
+#include <asio.hpp>
+#include <boost/bind/bind.hpp>
 
-using asio::bind_executor;
-using asio::get_associated_executor;
-using asio::static_thread_pool;
-namespace execution = asio::execution;
-
-// A function to asynchronously read a single line from an input stream.
-template <class IoExecutor, class Handler>
-void async_getline(IoExecutor io_ex, std::istream& is, Handler handler)
+class printer
 {
-  // Track work for the handler's associated executor.
-  auto work_ex = asio::prefer(
-      get_associated_executor(handler, io_ex),
-      execution::outstanding_work.tracked);
+public:
+  printer(asio::io_context& io)
+    : strand_(asio::make_strand(io)),
+      timer1_(io, asio::chrono::seconds(1)),
+      timer2_(io, asio::chrono::seconds(1)),
+      count_(0)
+  {
+    timer1_.async_wait(asio::bind_executor(strand_,
+          std::bind(&printer::print1, this)));
 
-  // Post a function object to do the work asynchronously.
-  execution::execute(
-      asio::require(io_ex, execution::blocking.never),
-      [&is, work_ex, handler=std::move(handler)]() mutable
-      {
-        std::string line;
-        std::getline(is, line);
+    timer2_.async_wait(asio::bind_executor(strand_,
+          std::bind(&printer::print2, this)));
+  }
 
-        // Pass the result to the handler, via the associated executor.
-        execution::execute(
-            asio::prefer(work_ex, execution::blocking.possibly),
-            [line=std::move(line), handler=std::move(handler)]() mutable
-            {
-              handler(std::move(line));
-            });
-      });
-}
+  ~printer()
+  {
+    std::cout << "Final count is " << count_ << std::endl;
+  }
+
+  void print1()
+  {
+    if (count_ < 10)
+    {
+      std::cout << "Timer 1: " << count_ << std::endl;
+      ++count_;
+
+      timer1_.expires_at(timer1_.expiry() + asio::chrono::seconds(1));
+
+      timer1_.async_wait(asio::bind_executor(strand_,
+            std::bind(&printer::print1, this)));
+    }
+  }
+
+  void print2()
+  {
+    if (count_ < 10)
+    {
+      std::cout << "Timer 2: " << count_ << std::endl;
+      ++count_;
+
+      timer2_.expires_at(timer2_.expiry() + asio::chrono::seconds(1));
+
+      timer2_.async_wait(asio::bind_executor(strand_,
+            std::bind(&printer::print2, this)));
+    }
+  }
+
+private:
+  asio::strand<asio::io_context::executor_type> strand_;
+  asio::steady_timer timer1_;
+  asio::steady_timer timer2_;
+  int count_;
+};
 
 int main()
 {
-  static_thread_pool io_pool(1);
-  static_thread_pool completion_pool(1);
+  asio::io_context io;
+  printer p(io);
 
-  std::cout << "Enter a line: ";
+  asio::thread t(std::bind([&io](){io.run();}));
+  io.run();
+  t.join();
 
-  async_getline(io_pool.executor(), std::cin,
-      bind_executor(completion_pool.executor(),
-        [](std::string line)
-        {
-          std::cout << "Line: " << line << "\n";
-        }));
-
-  io_pool.wait();
-  completion_pool.wait();
+  return 0;
 }
