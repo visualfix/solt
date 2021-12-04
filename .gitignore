@@ -31,8 +31,12 @@
 *.out
 *.app
 
+#cmake
 CMakeCache.txt
 cmake_install.cmake
 CMakeFiles
 Makefile
+build
+
+#output
 bin
