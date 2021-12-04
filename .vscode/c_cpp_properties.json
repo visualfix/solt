@@ -4,13 +4,33 @@
             "name": "Linux",
             "includePath": [
                 "${default}",
-                "${workspaceFolder}/include/asio"
+                "${workspaceFolder}/include/**"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
             "cStandard": "gnu17",
             "cppStandard": "gnu++14",
-            "intelliSenseMode": "linux-gcc-x64"
+            "intelliSenseMode": "linux-gcc-x64",
+            "compilerArgs": [
+                "-fcoroutines"
+            ]
+        },
+        {
+            "name": "Mac",
+            "includePath": [
+                "${default}",
+                "${workspaceFolder}/include/**"
+            ],
+            "defines": [],
+            "macFrameworkPath": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "gnu17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "macos-gcc-x64",
+            "compilerArgs": [
+                "-fcoroutines"
+            ],
+            "mergeConfigurations": false
         }
     ],
     "version": 4

@@ -1,110 +1,223 @@
-#include <ctime>
+//
+// chat_server.cpp
+// ~~~~~~~~~~~~~~~
+//
+// Copyright (c) 2003-2021 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+//
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+//
+
+#define ASIO_HAS_CSTDINT
+
+#include <cstdlib>
+#include <deque>
 #include <iostream>
+#include <list>
+#include <memory>
+#include <set>
 #include <string>
-#include <asio.hpp>
+#include <utility>
+#include <asio/awaitable.hpp>
+#include <asio/detached.hpp>
+#include <asio/co_spawn.hpp>
+#include <asio/io_context.hpp>
+#include <asio/ip/tcp.hpp>
+#include <asio/read_until.hpp>
+#include <asio/redirect_error.hpp>
+#include <asio/signal_set.hpp>
+#include <asio/steady_timer.hpp>
+#include <asio/use_awaitable.hpp>
+#include <asio/write.hpp>
 
 using asio::ip::tcp;
+using asio::awaitable;
+using asio::co_spawn;
+using asio::detached;
+using asio::redirect_error;
+using asio::use_awaitable;
 
-std::string make_daytime_string()
-{
-  using namespace std; // For time_t, time and ctime;
-  time_t now = time(0);
-  return ctime(&now);
-}
+//----------------------------------------------------------------------
 
-class tcp_connection
-  : public std::enable_shared_from_this<tcp_connection>
+class chat_participant
 {
 public:
-  typedef std::shared_ptr<tcp_connection> pointer;
+  virtual ~chat_participant() {}
+  virtual void deliver(const std::string& msg) = 0;
+};
 
-  static pointer create(asio::io_context& io_context)
+typedef std::shared_ptr<chat_participant> chat_participant_ptr;
+
+//----------------------------------------------------------------------
+
+class chat_room
+{
+public:
+  void join(chat_participant_ptr participant)
   {
-    return pointer(new tcp_connection(io_context));
+    participants_.insert(participant);
+    for (auto msg: recent_msgs_)
+      participant->deliver(msg);
   }
 
-  ~tcp_connection()
+  void leave(chat_participant_ptr participant)
   {
-    std::cout << "~tcp_connection" << std::endl;
+    participants_.erase(participant);
   }
 
-  tcp::socket& socket()
+  void deliver(const std::string& msg)
   {
-    return socket_;
+    recent_msgs_.push_back(msg);
+    while (recent_msgs_.size() > max_recent_msgs)
+      recent_msgs_.pop_front();
+
+    for (auto participant: participants_)
+      participant->deliver(msg);
+  }
+
+private:
+  std::set<chat_participant_ptr> participants_;
+  enum { max_recent_msgs = 100 };
+  std::deque<std::string> recent_msgs_;
+};
+
+//----------------------------------------------------------------------
+
+class chat_session
+  : public chat_participant,
+    public std::enable_shared_from_this<chat_session>
+{
+public:
+  chat_session(tcp::socket socket, chat_room& room)
+    : socket_(std::move(socket)),
+      timer_(socket_.get_executor()),
+      room_(room)
+  {
+    timer_.expires_at(std::chrono::steady_clock::time_point::max());
   }
 
   void start()
   {
-    message_ = make_daytime_string();
+    room_.join(shared_from_this());
 
-    asio::async_write(socket_, asio::buffer(message_),
-        std::bind(&tcp_connection::handle_write, shared_from_this(),
-          std::placeholders::_1,
-          std::placeholders::_2));
+    co_spawn(socket_.get_executor(),
+        [self = shared_from_this()]{ return self->reader(); },
+        detached);
+
+    co_spawn(socket_.get_executor(),
+        [self = shared_from_this()]{ return self->writer(); },
+        detached);
+  }
+
+  void deliver(const std::string& msg)
+  {
+    write_msgs_.push_back(msg);
+    timer_.cancel_one();
   }
 
 private:
-  tcp_connection(asio::io_context& io_context)
-    : socket_(io_context)
+  awaitable<void> reader()
   {
+    try
+    {
+      for (std::string read_msg;;)
+      {
+        std::size_t n = co_await asio::async_read_until(socket_,
+            asio::dynamic_buffer(read_msg, 1024), "\n", use_awaitable);
+
+        room_.deliver(read_msg.substr(0, n));
+        read_msg.erase(0, n);
+      }
+    }
+    catch (std::exception&)
+    {
+      stop();
+    }
   }
 
-  void handle_write(const asio::error_code& /*error*/,
-      size_t /*bytes_transferred*/)
+  awaitable<void> writer()
   {
+    try
+    {
+      while (socket_.is_open())
+      {
+        if (write_msgs_.empty())
+        {
+          asio::error_code ec;
+          co_await timer_.async_wait(redirect_error(use_awaitable, ec));
+        }
+        else
+        {
+          co_await asio::async_write(socket_,
+              asio::buffer(write_msgs_.front()), use_awaitable);
+          write_msgs_.pop_front();
+        }
+      }
+    }
+    catch (std::exception&)
+    {
+      stop();
+    }
+  }
+
+  void stop()
+  {
+    room_.leave(shared_from_this());
+    socket_.close();
+    timer_.cancel();
   }
 
   tcp::socket socket_;
-  std::string message_;
+  asio::steady_timer timer_;
+  chat_room& room_;
+  std::deque<std::string> write_msgs_;
 };
 
-class tcp_server
+//----------------------------------------------------------------------
+
+awaitable<void> listener(tcp::acceptor acceptor)
 {
-public:
-  tcp_server(asio::io_context& io_context)
-    : io_context_(io_context),
-      acceptor_(io_context, tcp::endpoint(tcp::v4(), 13))
+  chat_room room;
+
+  for (;;)
   {
-    start_accept();
+    std::make_shared<chat_session>(
+        co_await acceptor.async_accept(use_awaitable),
+        room
+      )->start();
   }
+}
 
-private:
-  void start_accept()
-  {
-    tcp_connection::pointer new_connection =
-      tcp_connection::create(io_context_);
+//----------------------------------------------------------------------
 
-    acceptor_.async_accept(new_connection->socket(),
-        std::bind(&tcp_server::handle_accept, this, new_connection,
-          std::placeholders::_1));
-  }
-
-  void handle_accept(tcp_connection::pointer new_connection,
-      const asio::error_code& error)
-  {
-    if (!error)
-    {
-      new_connection->start();
-    }
-
-    start_accept();
-  }
-
-  asio::io_context& io_context_;
-  tcp::acceptor acceptor_;
-};
-
-int main()
+int main(int argc, char* argv[])
 {
   try
   {
-    asio::io_context io_context;
-    tcp_server server(io_context);
+    if (argc < 2)
+    {
+      std::cerr << "Usage: chat_server <port> [<port> ...]\n";
+      return 1;
+    }
+
+    asio::io_context io_context(1);
+
+    for (int i = 1; i < argc; ++i)
+    {
+      unsigned short port = std::atoi(argv[i]);
+      co_spawn(io_context,
+          listener(tcp::acceptor(io_context, {tcp::v4(), port})),
+          detached);
+    }
+
+    asio::signal_set signals(io_context, SIGINT, SIGTERM);
+    signals.async_wait([&](auto, auto){ io_context.stop(); });
+
     io_context.run();
   }
   catch (std::exception& e)
   {
-    std::cerr << e.what() << std::endl;
+    std::cerr << "Exception: " << e.what() << "\n";
   }
 
   return 0;
