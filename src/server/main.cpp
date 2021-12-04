@@ -39,6 +39,11 @@ using asio::use_awaitable;
 
 //----------------------------------------------------------------------
 
+void Log(const std::string& log)
+{
+  std::cout << log << std::endl;
+}
+
 class chat_participant
 {
 public:
@@ -55,6 +60,7 @@ class chat_room
 public:
   void join(chat_participant_ptr participant)
   {
+    Log("join");
     participants_.insert(participant);
     for (auto msg: recent_msgs_)
       participant->deliver(msg);
@@ -67,6 +73,7 @@ public:
 
   void deliver(const std::string& msg)
   {
+    Log("deliver : " + msg);
     recent_msgs_.push_back(msg);
     while (recent_msgs_.size() > max_recent_msgs)
       recent_msgs_.pop_front();
@@ -98,6 +105,7 @@ public:
 
   void start()
   {
+    Log("Start");
     room_.join(shared_from_this());
 
     co_spawn(socket_.get_executor(),
@@ -125,6 +133,7 @@ private:
         std::size_t n = co_await asio::async_read_until(socket_,
             asio::dynamic_buffer(read_msg, 1024), "\n", use_awaitable);
 
+        Log("reader :" + read_msg);
         room_.deliver(read_msg.substr(0, n));
         read_msg.erase(0, n);
       }
@@ -151,6 +160,8 @@ private:
           co_await asio::async_write(socket_,
               asio::buffer(write_msgs_.front()), use_awaitable);
           write_msgs_.pop_front();
+
+          Log("writer");
         }
       }
     }
