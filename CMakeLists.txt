@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # GNU 확장을 사용하지 않는다
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include_directories(${PROJECT_SOURCE_DIR}/include/flatbuffers)
 include_directories(${PROJECT_SOURCE_DIR}/include/asio)
 
 add_subdirectory(src)

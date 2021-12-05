@@ -1,0 +1,16 @@
+include "../primitives/Vec3.fbs";
+
+namespace MyNameSpace;
+
+enum Color : byte { Red = 1, Green, Blue }
+
+table Monster {
+  pos:Vec3;
+  mana:short = 150;
+  hp:short = 100;
+  name:string;
+  inventory:[ubyte];
+  color:Color = Blue;
+}
+
+root_type Monster;

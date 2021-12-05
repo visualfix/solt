@@ -16,7 +16,9 @@ endif()
 
 add_executable(${TARGET} main.cpp)
 
-target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/messages)
+#target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 
 # PThread 사용
 target_link_libraries(${TARGET} Threads::Threads)

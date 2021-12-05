@@ -12,7 +12,9 @@
 #include <deque>
 #include <iostream>
 #include <thread>
-#include "asio.hpp"
+#include <asio.hpp>
+#include <RootTest_generated.h>
+#include <Monster_generated.h>
 
 using asio::ip::tcp;
 
@@ -72,13 +74,20 @@ private:
   void do_read_body()
   {
     Log("do_read_body");
-    asio::async_read_until(socket_, asio::dynamic_buffer(buffer_), '\n',
+
+    asio::async_read(socket_, asio::dynamic_buffer(buffer_),
         [this](std::error_code ec, std::size_t length)
         {
-          if (!ec)
+          auto buff = (uint8_t*)buffer_.data();
+          auto verifier = flatbuffers::Verifier(buff, length);
+          if (!ec && VerifyRootTestBuffer(verifier))
           {
+            auto test = GetRootTest(buff);
+
             //std::cout.write(buffer_, length);
-            std::cout << buffer_ << std::endl;
+            std::cout << "HP: " << test->hp() << std::endl;
+            std::cout << "Mana: " << test->mana() << std::endl;
+            std::cout << "Pos: " << test->pos()->z() << std::endl;
             buffer_.clear();
             do_read_body();
           }
@@ -93,9 +102,17 @@ private:
   {
     Log("do_write");
 
+    flatbuffers::FlatBufferBuilder builder;
+    auto data = Vec3(1,2,3);
+    auto packet = CreateRootTest(builder, &data, 10, 10);
+    
+    builder.Finish(packet);
+
+    n = builder.GetSize();
+    memcpy(sendBuffer, builder.GetBufferPointer(), builder.GetSize());
+
     asio::async_write(socket_,
-        asio::buffer(write_msgs_.front().data(),
-          write_msgs_.front().length()),
+        asio::buffer(sendBuffer, n),
         [this](std::error_code ec, std::size_t /*length*/)
         {
           if (!ec)
@@ -114,6 +131,9 @@ private:
   }
 
 private:
+  char sendBuffer[1024];
+  size_t n;
+
   asio::io_context& io_context_;
   tcp::socket socket_;
   std::string buffer_;

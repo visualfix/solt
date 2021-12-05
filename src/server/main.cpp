@@ -9,6 +9,7 @@
 //
 
 #define ASIO_HAS_CSTDINT
+#define FLATBUFFERS_TRACK_VERIFIER_BUFFER_SIZE
 
 #include <cstdlib>
 #include <deque>
@@ -23,12 +24,13 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
-#include <asio/read_until.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/signal_set.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
 #include <asio/write.hpp>
+
+#include <RootTest_generated.h>
 
 using asio::ip::tcp;
 using asio::awaitable;
@@ -48,7 +50,7 @@ class chat_participant
 {
 public:
   virtual ~chat_participant() {}
-  virtual void deliver(const std::string& msg) = 0;
+  virtual void deliver(const asio::const_buffer& msg) = 0;
 };
 
 typedef std::shared_ptr<chat_participant> chat_participant_ptr;
@@ -71,9 +73,9 @@ public:
     participants_.erase(participant);
   }
 
-  void deliver(const std::string& msg)
+  void deliver(const asio::const_buffer& msg)
   {
-    Log("deliver : " + msg);
+    Log("deliver");
     recent_msgs_.push_back(msg);
     while (recent_msgs_.size() > max_recent_msgs)
       recent_msgs_.pop_front();
@@ -85,7 +87,7 @@ public:
 private:
   std::set<chat_participant_ptr> participants_;
   enum { max_recent_msgs = 100 };
-  std::deque<std::string> recent_msgs_;
+  std::deque<asio::const_buffer> recent_msgs_;
 };
 
 //----------------------------------------------------------------------
@@ -117,7 +119,7 @@ public:
         detached);
   }
 
-  void deliver(const std::string& msg)
+  void deliver(const asio::const_buffer& msg)
   {
     write_msgs_.push_back(msg);
     timer_.cancel_one();
@@ -128,14 +130,48 @@ private:
   {
     try
     {
-      for (std::string read_msg;;)
+      char receivebuffer[1024];
+      char readBuffer[1024];
+      std::size_t pivot = 0;
+      while(true)
       {
-        std::size_t n = co_await asio::async_read_until(socket_,
-            asio::dynamic_buffer(read_msg, 1024), "\n", use_awaitable);
+        
+        std::size_t n = co_await socket_.async_read_some(
+          asio::buffer(readBuffer, 1024), 
+          use_awaitable);
 
-        Log("reader :" + read_msg);
-        room_.deliver(read_msg.substr(0, n));
-        read_msg.erase(0, n);
+        memcpy(receivebuffer + pivot, readBuffer, n);
+
+        pivot = n + pivot;
+
+        memset(readBuffer, 0, sizeof(readBuffer)); 
+
+        auto buff = (uint8_t*)receivebuffer;
+        auto verifier = flatbuffers::Verifier(buff, pivot);
+
+        if (VerifyRootTestBuffer(verifier))
+        {
+          std::cout << "VerifyRootTestBuffer"<< std::endl;
+
+          auto test = GetRootTest(buff);
+
+          std::cout << "HP: " << test->hp() << std::endl;
+          std::cout << "Mana: " << test->mana() << std::endl;
+          std::cout << "Pos: " << test->pos()->z() << std::endl;
+
+          auto tt = verifier.GetComputedSize();
+
+          pivot = pivot - tt;
+          memmove(receivebuffer, 
+          receivebuffer + tt, 
+          pivot);
+          
+
+          //uto newBuff = asio::buffer(read_msg.substr(0, n), n);
+          //oom_.deliver(newBuff);
+          //ead_msg.erase(0, n);
+          // = 0;
+        }
       }
     }
     catch (std::exception&)
@@ -158,7 +194,7 @@ private:
         else
         {
           co_await asio::async_write(socket_,
-              asio::buffer(write_msgs_.front()), use_awaitable);
+              write_msgs_.front(), use_awaitable);
           write_msgs_.pop_front();
 
           Log("writer");
@@ -181,7 +217,7 @@ private:
   tcp::socket socket_;
   asio::steady_timer timer_;
   chat_room& room_;
-  std::deque<std::string> write_msgs_;
+  std::deque<asio::const_buffer> write_msgs_;
 };
 
 //----------------------------------------------------------------------
